@@ -1,3 +1,4 @@
+import os
 import regex as re
 from collections import defaultdict
 
@@ -32,9 +33,9 @@ def merge_pair(
 
 
 def train_bpe_tokenizer(
-    input_path: str,
+    input_path: str | os.PathLike,
     vocab_size: int,
-    special_tokens: list[str]
+    special_tokens: list[str],
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
 
     # Step 1: Initialize vocabulary with basic bytes and special tokens.
@@ -52,12 +53,27 @@ def train_bpe_tokenizer(
     # The GPT-2 pre-tokenization regex pattern
     pat = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
     
+    # === 新增：处理特殊 Token 的隔离 ===
+    if special_tokens:
+        # 创建一个匹配任何特殊 token 的正则表达式，注意要转义(escape)特殊字符
+        # 按照长度降序排列，以确保先匹配较长的特殊 token（例如 '<|endoftext|>' 优于 '<|'）
+        sorted_special_tokens = sorted(special_tokens, key=len, reverse=True)
+        escaped_special_tokens = [re.escape(st) for st in sorted_special_tokens]
+        special_token_pattern = re.compile("|".join(escaped_special_tokens))
+        
+        # 使用特殊 token 将文本切分为若干片段
+        text_segments = special_token_pattern.split(text)
+    else:
+        text_segments = [text]
+
+    # === 修改：只对普通文本片段进行预分词统计 ===
     word_freqs = defaultdict(int)
-    for match in pat.finditer(text):
-        word_bytes = match.group(0).encode('utf-8')
-        # Represent words as tuples of integer byte values
-        word_tuple = tuple(b for b in word_bytes)
-        word_freqs[word_tuple] += 1
+    for segment in text_segments:
+        if not segment: continue # 跳过空片段
+        for match in pat.finditer(segment):
+            word_bytes = match.group(0).encode('utf-8')
+            word_tuple = tuple(b for b in word_bytes)
+            word_freqs[word_tuple] += 1
 
     # Step 3: Calculate initial pair frequencies from the pre-tokenized words.
     # This is the "indexing" step.
@@ -71,7 +87,9 @@ def train_bpe_tokenizer(
         if not pair_freqs:
             break # No more pairs to merge
         # In case of ties, Python's max() on tuples will handle lexicographical breaking
-        best_pair = max(pair_freqs, key=pair_freqs.get)
+        # best_pair = max(pair_freqs, key=pair_freqs.get)
+        # 错误的写法：best_pair = max(pair_freqs, key=lambda x: (pair_freqs[x], x)) # 构建(它的频率, 它本身)元组作为比较依据
+        best_pair = max(pair_freqs, key=lambda p: (pair_freqs[p], vocab[p[0]], vocab[p[1]])) # 相同频率依次比较第一个 Token 和第二个 Token 的实际内容
         
         # 4b. Create the new merged token.
         new_token_id = len(vocab)
