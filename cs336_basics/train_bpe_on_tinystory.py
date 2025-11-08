@@ -19,7 +19,6 @@ def main():
     )
     elapsed = time.time() - start
     print(f"训练耗时 {elapsed/60:.2f} 分钟，生成 vocab 中最长的 token 是 {max(vocab.values(), key=len)}")
-
     # 序列化保存，便于后续作业检查
     vocab_path = Path("artifacts") / "tinystories_vocab.json"
     merges_path = Path("artifacts") / "tinystories_merges.pkl"
