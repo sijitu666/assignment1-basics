@@ -6,7 +6,7 @@ from pathlib import Path
 from cs336_basics.bpe import train_bpe_tokenizer
 
 DATA_DIR = Path("data")
-TRAIN_PATH = DATA_DIR / "TinyStoriesV2-GPT4-train.txt"
+TRAIN_PATH = DATA_DIR / "owt_train.txt"
 VOCAB_SIZE = 10_000
 SPECIAL_TOKENS = ["<|endoftext|>"]
 
@@ -21,9 +21,9 @@ def main():
     elapsed = time.time() - start
     print(f"训练耗时 {elapsed/60:.2f} 分钟，生成 vocab 中最长的 token 是 {max(vocab.values(), key=len)}")
     # 序列化保存，便于后续作业检查
-    vocab_path = Path("artifacts") / "tinystories_vocab.pkl"
-    vocab_path_json = Path("artifacts") / "tinystories_vocab.json"
-    merges_path = Path("artifacts") / "tinystories_merges.pkl"
+    vocab_path = Path("artifacts") / "owt_vocab.pkl"
+    vocab_path_json = Path("artifacts") / "owt_vocab.json"
+    merges_path = Path("artifacts") / "owt_merges.pkl"
     vocab_path.parent.mkdir(parents=True, exist_ok=True)
 
     with vocab_path_json.open("w", encoding="utf-8") as f:

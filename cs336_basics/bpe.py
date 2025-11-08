@@ -1,8 +1,9 @@
 import os
 import regex as re
 from collections import defaultdict, Counter
-from multiprocessing import Pool, cpu_count
-import functools
+from multiprocessing import Pool
+
+from typing import Iterable, Iterator
 
 def initialize_stats(word_freqs: dict[tuple[int, ...], int]) -> tuple[
     defaultdict[tuple[int, int], int],
@@ -117,6 +118,8 @@ def train_bpe_tokenizer(
         new_token_id = len(vocab)
         p1, p2 = best_pair
         vocab[new_token_id] = vocab[p1] + vocab[p2]
+        # 临时日志：输出合并信息
+        print(f"合并 token {p1} ({vocab[p1]!r}) + token {p2} ({vocab[p2]!r}) => 新 token id {new_token_id}")
         merges.append((vocab[p1], vocab[p2]))
 
         affected_words = list(pair_to_words[best_pair])
@@ -129,3 +132,98 @@ def train_bpe_tokenizer(
             word_freqs[new_word] += freq
 
     return vocab, merges
+
+
+class Tokenizer:
+    def __init__(
+        self,
+        vocab: dict[int, bytes],
+        merges: list[tuple[bytes, bytes]],
+        special_tokens: list[str] | None = None,
+    ):
+        """
+        Construct a tokenizer from a given
+        vocabulary, list of merges, and (optionally) a list of special tokens.
+        Args:
+            vocab (dict[int, bytes]): The vocabulary to use.
+            merges (list[tuple[bytes, bytes]]): The list of merges to use.
+            special_tokens (list[str] | None, optional): The list of special tokens to use. Defaults to None.
+        Returns:
+            Tokenizer: The tokenizer.
+        """
+        self.vocab = vocab
+        self.merges = merges
+        self.special_tokens = special_tokens
+        self.vocab_reverse = {v: k for k, v in self.vocab.items}
+        
+        # 对于不存在的special token，放入vocab
+        for special_token in self.special_tokens:
+            if not vocab_reverse[special_token]:
+                token_id = len(self.vocab)
+                vocab[token_id] = special_token.encode('utf-8')
+        
+        self.special_token_ids = {token: self.vocab_reverse[token.encode('utf-8')] for token in self.special_tokens}
+
+        
+    @classmethod
+    def from_files(
+        cls,
+        vocab_filepath: str,
+        merges_filepath: str,
+        special_tokens: list[str] | None = None,
+    ):
+        """
+        Construct a tokenizer from a given vocabulary file and merges file.
+        Args:
+            vocab_filepath (str): The path to the vocabulary file.
+            merges_filepath (str): The path to the merges file.
+            special_tokens (list[str] | None, optional): The list of special tokens to use. Defaults to None.
+        Returns:
+            Tokenizer: The tokenizer.
+        """
+        # # 方案一：对于latin-1存储，兼容控制字符存储在json中的情况
+        # with open(vocab_filepath, "r", encoding="utf-8") as f:
+        #     raw_vocab = json.load(f)
+
+        # vocab = {}
+        # for token_id_str, token_val in raw_vocab.items():
+        #     # 用 latin-1 编码回去，完美还原原始 bytes
+        #     vocab[int(token_id_str)] = token_val.encode("latin-1")
+        
+        # # 方案二：# 在加载后手动修复前 256 个，这种方案是错误的，因为没办法保证后续被合并的bytes里面是否也有非法的utf-8字符、组合
+        # for i in range(256):
+        #     vocab[i] = bytes([i])
+
+        vocab = pickle.load(open(vocab_filepath, "rb"))
+        merges = pickle.load(open(merges_filepath, "rb"))
+        return cls(vocab, merges, special_tokens)
+
+    def encode(self, text: str) -> list[int]:
+        """
+        Encode a string into a sequence of token IDs.
+        Args:
+            text (str): The string to encode.
+        Returns:
+            list[int]: The list of token IDs.
+        """
+        pass
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        """
+        Given an iterable of strings (e.g., a Python file handle), return a generator that lazily yields token IDs. 
+        This is required for memory-effcient tokenization of large files that we cannot directly load into memory.
+        Args:
+            iterable (Iterable[str]): The iterable of strings to encode.
+        Returns:
+            Iterator[int]: The iterator of token IDs.
+        """
+        pass
+    def decode(self, ids: list[int]) -> str:
+        """
+        Decode a sequence of token IDs into text.
+        Args:
+            ids (list[int]): The list of token IDs to decode.
+        Returns:
+            str: The decoded string.
+        """
+        pass
+        
