@@ -1,0 +1,17 @@
+{
+  "include": [
+    "cs336_basics",  // 仅包含你的源代码目录
+    "tests"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    ".git",
+    "venv",
+    ".venv",
+    "env",
+    "dist",
+    "build",
+    "**/*.ipynb" // 如果你不常需要再 notebook 中查找引用，可以排除
+  ]
+}

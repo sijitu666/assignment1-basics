@@ -1,8 +1,9 @@
 import os
+import json
+import pickle
 import regex as re
 from collections import defaultdict, Counter
-from multiprocessing import Pool
-
+from multiprocessing import Pool, cpu_count
 from typing import Iterable, Iterator
 
 def initialize_stats(word_freqs: dict[tuple[int, ...], int]) -> tuple[
@@ -64,7 +65,7 @@ def train_bpe_tokenizer(
     input_path: str | os.PathLike,
     vocab_size: int,
     special_tokens: list[str],
-    num_proc: int | None = None, # 新增可选参数控制并行
+    num_proc: int | None = None,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
 
     # Step 1: Initialize vocabulary
@@ -76,12 +77,8 @@ def train_bpe_tokenizer(
     with open(input_path, 'r', encoding='utf-8') as f:
         text = f.read()
 
-    # 使用特殊 token 作为天然的分块边界
     delimiter = "<|endoftext|>"
     if delimiter in special_tokens:
-        # 使用正则split以确保特殊token被正确处理（虽然这里我们只用它来分块）
-        # 如果能确定输入格式良好，简单的 text.split(delimiter) 可能也够用
-        # 为了稳妥，复用之前的特殊token隔离逻辑来分块
         sorted_special_tokens = sorted(special_tokens, key=len, reverse=True)
         escaped_special_tokens = [re.escape(st) for st in sorted_special_tokens]
         special_token_pattern = re.compile("|".join(escaped_special_tokens))
@@ -89,18 +86,15 @@ def train_bpe_tokenizer(
     else:
         chunks = [text]
     
-    # 去除空块
     chunks = [c for c in chunks if c]
 
     word_freqs = Counter()
     if num_proc is not None and num_proc > 1:
-        # 并行路径
         with Pool(processes=num_proc) as pool:
             chunk_counters = pool.map(_pretokenize_chunk, chunks)
         for chunk_counter in chunk_counters:
             word_freqs.update(chunk_counter)
     else:
-        # 单进程路径 (复用 worker 函数逻辑或保持原样)
         for chunk in chunks:
             word_freqs.update(_pretokenize_chunk(chunk))
 
@@ -118,8 +112,7 @@ def train_bpe_tokenizer(
         new_token_id = len(vocab)
         p1, p2 = best_pair
         vocab[new_token_id] = vocab[p1] + vocab[p2]
-        # 临时日志：输出合并信息
-        print(f"合并 token {p1} ({vocab[p1]!r}) + token {p2} ({vocab[p2]!r}) => 新 token id {new_token_id}")
+        # print(f"合并 token {p1} ({vocab[p1]!r}) + token {p2} ({vocab[p2]!r}) => 新 token id {new_token_id}")
         merges.append((vocab[p1], vocab[p2]))
 
         affected_words = list(pair_to_words[best_pair])
@@ -141,30 +134,32 @@ class Tokenizer:
         merges: list[tuple[bytes, bytes]],
         special_tokens: list[str] | None = None,
     ):
-        """
-        Construct a tokenizer from a given
-        vocabulary, list of merges, and (optionally) a list of special tokens.
-        Args:
-            vocab (dict[int, bytes]): The vocabulary to use.
-            merges (list[tuple[bytes, bytes]]): The list of merges to use.
-            special_tokens (list[str] | None, optional): The list of special tokens to use. Defaults to None.
-        Returns:
-            Tokenizer: The tokenizer.
-        """
         self.vocab = vocab
         self.merges = merges
-        self.special_tokens = special_tokens
-        self.vocab_reverse = {v: k for k, v in self.vocab.items}
+        self.special_tokens = special_tokens or []
+        # 1、构建反向词汇表，用于 encode 时查找 ID
+        self.vocab_reverse = {v: k for k, v in self.vocab.items()}
         
-        # 对于不存在的special token，放入vocab
-        for special_token in self.special_tokens:
-            if not vocab_reverse[special_token]:
-                token_id = len(self.vocab)
-                vocab[token_id] = special_token.encode('utf-8')
-        
-        self.special_token_ids = {token: self.vocab_reverse[token.encode('utf-8')] for token in self.special_tokens}
+        # 2、确保所有特殊 Token 都在词汇表中，并建立快速查找表
+        self.special_token_ids = {}
+        for st in self.special_tokens:
+            st_bytes = st.encode('utf-8')
+            if st_bytes not in self.vocab_reverse:
+                new_id = len(self.vocab)
+                self.vocab[new_id] = st_bytes
+                self.vocab_reverse[st_bytes] = new_id
+            self.special_token_ids[st] = self.vocab_reverse[st_bytes]
 
+        # 3. 预编译特殊 Token 的正则模式，用于 encode 时的文本切分
+        if self.special_tokens:
+            sorted_st = sorted(self.special_tokens, key=len, reverse=True)
+            self.special_pat = re.compile("|".join(re.escape(st) for st in sorted_st))
+        else:
+            self.special_pat = None
         
+        # 4. 预编译 GPT-2 预分词正则
+        self.pat = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+
     @classmethod
     def from_files(
         cls,
@@ -172,58 +167,90 @@ class Tokenizer:
         merges_filepath: str,
         special_tokens: list[str] | None = None,
     ):
-        """
-        Construct a tokenizer from a given vocabulary file and merges file.
-        Args:
-            vocab_filepath (str): The path to the vocabulary file.
-            merges_filepath (str): The path to the merges file.
-            special_tokens (list[str] | None, optional): The list of special tokens to use. Defaults to None.
-        Returns:
-            Tokenizer: The tokenizer.
-        """
-        # # 方案一：对于latin-1存储，兼容控制字符存储在json中的情况
-        # with open(vocab_filepath, "r", encoding="utf-8") as f:
-        #     raw_vocab = json.load(f)
-
-        # vocab = {}
-        # for token_id_str, token_val in raw_vocab.items():
-        #     # 用 latin-1 编码回去，完美还原原始 bytes
-        #     vocab[int(token_id_str)] = token_val.encode("latin-1")
-        
-        # # 方案二：# 在加载后手动修复前 256 个，这种方案是错误的，因为没办法保证后续被合并的bytes里面是否也有非法的utf-8字符、组合
-        # for i in range(256):
-        #     vocab[i] = bytes([i])
-
-        vocab = pickle.load(open(vocab_filepath, "rb"))
-        merges = pickle.load(open(merges_filepath, "rb"))
+        # 假设 vocab 用 pickle 保存以保持二进制安全
+        with open(vocab_filepath, "rb") as f:
+             vocab = pickle.load(f)
+        with open(merges_filepath, "rb") as f:
+             merges = pickle.load(f)
         return cls(vocab, merges, special_tokens)
 
-    def encode(self, text: str) -> list[int]:
-        """
-        Encode a string into a sequence of token IDs.
-        Args:
-            text (str): The string to encode.
-        Returns:
-            list[int]: The list of token IDs.
-        """
-        pass
-    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
-        """
-        Given an iterable of strings (e.g., a Python file handle), return a generator that lazily yields token IDs. 
-        This is required for memory-effcient tokenization of large files that we cannot directly load into memory.
-        Args:
-            iterable (Iterable[str]): The iterable of strings to encode.
-        Returns:
-            Iterator[int]: The iterator of token IDs.
-        """
-        pass
-    def decode(self, ids: list[int]) -> str:
-        """
-        Decode a sequence of token IDs into text.
-        Args:
-            ids (list[int]): The list of token IDs to decode.
-        Returns:
-            str: The decoded string.
-        """
-        pass
+    def _tokenize_word(self, word_bytes: bytes) -> list[int]:
+        # 初始状态：将单词视为单字节 ID 列表
+        ids = [self.vocab_reverse[bytes([b])] for b in word_bytes]
         
+        while len(ids) >= 2:
+            # 找出当前序列中所有可能的 pair，并找到在 merges 中最早出现的那个
+            stats = {}
+            for i in range(len(ids) - 1):
+                pair = (self.vocab[ids[i]], self.vocab[ids[i+1]])
+                stats[pair] = i
+
+            best_pair = None
+            
+            # 在训练好的 merges 列表中，找到第一个（优先级最高）且当前实际存在的 pair
+            for i, merge in enumerate(self.merges):
+                if merge in stats:
+                    # 找到了一个可合并的 pair
+                    best_pair = merge
+                    break
+            
+            if best_pair is None:
+                break # 没有更多可合并的 pair
+
+            # 执行合并
+            p1, p2 = best_pair
+            new_ids = []
+            i = 0
+            while i < len(ids):
+                if i < len(ids) - 1 and self.vocab[ids[i]] == p1 and self.vocab[ids[i+1]] == p2:
+                    new_ids.append(self.vocab_reverse[p1 + p2])
+                    i += 2
+                else:
+                    new_ids.append(ids[i])
+                    i += 1
+            ids = new_ids
+            
+        return ids
+
+    def encode(self, text: str) -> list[int]:
+        final_ids = []
+        
+        # 1. 使用特殊 token 切分文本
+        if self.special_pat:
+            segments = self.special_pat.split(text)
+            # split 结果中会包含分隔符（如果用了捕获组），这里需要重新确认一下哪些是特殊token
+            # 更简单的方法是手动遍历或使用 finditer 来定位特殊 token
+            # 这里采用一种简化的两步法：先 split，再检查
+            
+            # 为了保留特殊 token，使用捕获组
+            special_pat_with_group = re.compile(f"({self.special_pat.pattern})")
+            segments = special_pat_with_group.split(text)
+        else:
+            segments = [text]
+            
+        for segment in segments:
+            if not segment: continue
+            
+            if segment in self.special_token_ids:
+                final_ids.append(self.special_token_ids[segment])
+            else:
+                # 普通文本：使用 GPT-2 正则进行预分词
+                for match in self.pat.finditer(segment):
+                    word_bytes = match.group(0).encode('utf-8')
+                    final_ids.extend(self._tokenize_word(word_bytes))
+                    
+        return final_ids
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        for chunk in iterable:
+            yield from self.encode(chunk)
+
+    def decode(self, ids: list[int]) -> str:
+        byte_parts = []
+        for idx in ids:
+            if idx in self.vocab:
+                byte_parts.append(self.vocab[idx])
+            # 可以选择在这里处理未知的 ID，或者忽略
+        
+        full_bytes = b"".join(byte_parts)
+        return full_bytes.decode('utf-8', errors='replace')

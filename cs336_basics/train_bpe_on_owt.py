@@ -7,7 +7,7 @@ from cs336_basics.bpe import train_bpe_tokenizer
 
 DATA_DIR = Path("data")
 TRAIN_PATH = DATA_DIR / "owt_train.txt"
-VOCAB_SIZE = 10_000
+VOCAB_SIZE = 32_000
 SPECIAL_TOKENS = ["<|endoftext|>"]
 
 def main():
